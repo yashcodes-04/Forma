@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Environment variables
+.env
+.env.*
+.env.local
+!.env.example
+
+# SQLite database files and logs
+data/*.db
+data/*.db-*
+data/*.db-wal
+data/*.db-shm
+data/*.db-journal
+*.db
+*.db-*
+*.db-wal
+*.db-shm
+
+# Server logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+
+# System files
+.DS_Store
+Thumbs.db

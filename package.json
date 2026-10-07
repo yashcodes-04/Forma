@@ -1,0 +1,14 @@
+{
+  "name": "forma-clothing-brand-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "FORMA Luxury Clothing Brand - Fullstack E-Commerce Web Application",
+  "scripts": {
+    "install:all": "npm --prefix backend install && npm --prefix Frontend install",
+    "build": "npm --prefix Frontend run build",
+    "start": "npm --prefix backend start",
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:frontend": "npm --prefix Frontend run dev",
+    "seed": "npm --prefix backend run seed"
+  }
+}

@@ -1,0 +1,53 @@
+# ========================================================
+# FORMA ROOT GITIGNORE
+# ========================================================
+
+# Dependencies
+node_modules/
+Frontend/node_modules/
+backend/node_modules/
+
+# Production builds
+Frontend/dist/
+Frontend/build/
+Frontend/.vite/
+
+# Environment files containing secrets
+.env
+.env.*
+.env.local
+Frontend/.env
+Frontend/.env.*
+Frontend/.env.local
+backend/.env
+backend/.env.*
+backend/.env.local
+
+# Allow example files
+!.env.example
+!Frontend/.env.example
+!backend/.env.example
+
+# Local SQLite databases & lock files
+backend/data/*.db
+backend/data/*.db-*
+backend/data/*.db-wal
+backend/data/*.db-shm
+backend/data/*.db-journal
+*.db
+*.db-*
+
+# Logs & temp files
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.tmp-*
+.claude-replay.*
+
+# OS and Editor metadata
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
