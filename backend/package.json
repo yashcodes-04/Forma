@@ -3,8 +3,10 @@
   "version": "1.0.0",
   "description": "Backend REST API and Database for Forma Luxury Clothing Brand",
   "main": "src/server.js",
+  "license": "MIT",
   "type": "module",
   "scripts": {
+    "build": "echo 'No build step required for backend'",
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "seed": "node src/database/seed.js"
