@@ -1,6 +1,7 @@
 import { db } from "../database/db.js";
 import { otpService } from "../services/otpService.js";
 import { verifyFirebaseToken } from "../services/firebaseAdmin.js";
+import { supabase, isSupabaseConfigured } from "../database/supabaseClient.js";
 
 /**
  * Format and normalize Indian mobile numbers
@@ -10,6 +11,98 @@ function normalizeMobile(mobile) {
   const digits = String(mobile).replace(/\D/g, "");
   const last10 = digits.slice(-10);
   return last10.length === 10 ? `+91${last10}` : mobile;
+}
+
+/**
+ * Robust User Lookup across Supabase Cloud (permanent) and SQLite (local cache)
+ */
+async function findUser(mobile, email) {
+  const digits = mobile ? String(mobile).replace(/\D/g, "") : "";
+  const last10 = digits.slice(-10);
+  const withPlus91 = last10.length === 10 ? `+91${last10}` : "";
+  const targetEmail = email ? email.trim().toLowerCase() : "";
+
+  // 1. Check Supabase Cloud first (permanent cloud database)
+  if (isSupabaseConfigured && supabase) {
+    try {
+      if (last10) {
+        const { data, error } = await supabase
+          .from("profiles")
+          .select("*")
+          .or(`mobile.eq.${withPlus91},mobile.eq.${last10},mobile.ilike.%${last10}%`)
+          .limit(1);
+
+        if (!error && data && data.length > 0) {
+          const u = data[0];
+          // Keep local SQLite hot cache in sync
+          try {
+            db.prepare(`
+              INSERT OR REPLACE INTO users (id, name, email, mobile, role, avatar, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?)
+            `).run(
+              u.id,
+              u.name || `${u.first_name || ""} ${u.last_name || ""}`.trim() || "Forma Member",
+              u.email || null,
+              u.mobile,
+              u.role || "customer",
+              u.avatar || null,
+              u.created_at || new Date().toISOString()
+            );
+          } catch {}
+          return u;
+        }
+      }
+
+      if (targetEmail) {
+        const { data, error } = await supabase
+          .from("profiles")
+          .select("*")
+          .eq("email", targetEmail)
+          .limit(1);
+
+        if (!error && data && data.length > 0) {
+          const u = data[0];
+          try {
+            db.prepare(`
+              INSERT OR REPLACE INTO users (id, name, email, mobile, role, avatar, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?)
+            `).run(
+              u.id,
+              u.name || `${u.first_name || ""} ${u.last_name || ""}`.trim() || "Forma Member",
+              u.email || null,
+              u.mobile,
+              u.role || "customer",
+              u.avatar || null,
+              u.created_at || new Date().toISOString()
+            );
+          } catch {}
+          return u;
+        }
+      }
+    } catch (err) {
+      console.warn("Supabase profile lookup notice:", err.message);
+    }
+  }
+
+  // 2. Fallback to local SQLite cache
+  try {
+    if (withPlus91) {
+      let localUser = db.prepare("SELECT * FROM users WHERE mobile = ? OR mobile = ?").get(withPlus91, last10);
+      if (!localUser) {
+        localUser = db.prepare("SELECT * FROM users WHERE mobile LIKE ?").get(`%${last10}`);
+      }
+      if (localUser) return localUser;
+    }
+
+    if (targetEmail) {
+      const localUser = db.prepare("SELECT * FROM users WHERE email = ?").get(targetEmail);
+      if (localUser) return localUser;
+    }
+  } catch (err) {
+    console.warn("Local SQLite user lookup notice:", err.message);
+  }
+
+  return null;
 }
 
 /**
@@ -43,21 +136,7 @@ export const authController = {
 
       let cleanMobile = mobile ? normalizeMobile(mobile) : "";
       let targetEmail = email ? email.trim().toLowerCase() : "";
-      let existingUser = null;
-
-      // 1. If mobile provided, lookup user
-      if (cleanMobile) {
-        existingUser = db.prepare("SELECT * FROM users WHERE mobile = ?").get(cleanMobile);
-        if (!existingUser) {
-          const last10 = String(mobile).replace(/\D/g, "").slice(-10);
-          existingUser = db.prepare("SELECT * FROM users WHERE mobile = ?").get(last10);
-        }
-      }
-
-      // 2. If email provided, lookup user
-      if (!existingUser && targetEmail) {
-        existingUser = db.prepare("SELECT * FROM users WHERE email = ?").get(targetEmail);
-      }
+      let existingUser = await findUser(cleanMobile, targetEmail);
 
       // 3. For login: only registered users can login!
       if (purpose === "login") {
@@ -173,31 +252,15 @@ export const authController = {
 
       const normalizedEmail = email ? email.trim().toLowerCase() : null;
 
-      // 2. Check if user already exists in database
-      const existingUser = db
-        .prepare("SELECT * FROM users WHERE mobile = ?")
-        .get(cleanMobile);
+      // 2. Check if user already exists in database (Supabase Cloud + SQLite)
+      const existingUser = await findUser(cleanMobile, normalizedEmail);
 
       if (existingUser) {
         return res.status(409).json({
           success: false,
           message:
-            "An account is already registered with this mobile number. Please sign in instead.",
+            "An account is already registered with this mobile number or email. Please sign in instead.",
         });
-      }
-
-      if (normalizedEmail) {
-        const existingEmail = db
-          .prepare("SELECT * FROM users WHERE email = ?")
-          .get(normalizedEmail);
-
-        if (existingEmail) {
-          return res.status(409).json({
-            success: false,
-            message:
-              "An account is already registered with this email address. Please sign in instead.",
-          });
-        }
       }
 
       // 3. Prepare user object
@@ -209,22 +272,43 @@ export const authController = {
       const userId = `usr_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 6)}`;
       const createdAt = new Date().toISOString();
 
-      // 4. Save into Database
-      const insertUser = db.prepare(`
-        INSERT INTO users (id, name, email, mobile, password_hash, role, avatar, created_at)
-        VALUES (@id, @name, @email, @mobile, @password_hash, @role, @avatar, @created_at)
-      `);
+      // 4. Save into Database (SQLite local cache + Supabase Cloud)
+      try {
+        const insertUser = db.prepare(`
+          INSERT INTO users (id, name, email, mobile, password_hash, role, avatar, created_at)
+          VALUES (@id, @name, @email, @mobile, @password_hash, @role, @avatar, @created_at)
+        `);
 
-      insertUser.run({
-        id: userId,
-        name: fullName,
-        email: normalizedEmail,
-        mobile: cleanMobile,
-        password_hash: password || null,
-        role: "customer",
-        avatar: null,
-        created_at: createdAt,
-      });
+        insertUser.run({
+          id: userId,
+          name: fullName,
+          email: normalizedEmail,
+          mobile: cleanMobile,
+          password_hash: password || null,
+          role: "customer",
+          avatar: null,
+          created_at: createdAt,
+        });
+      } catch (dbErr) {
+        console.warn("Local SQLite user insert notice:", dbErr.message);
+      }
+
+      if (isSupabaseConfigured && supabase) {
+        try {
+          await supabase.from("profiles").upsert({
+            id: userId,
+            name: fullName,
+            first_name: fName,
+            last_name: lName,
+            email: normalizedEmail,
+            mobile: cleanMobile,
+            role: "customer",
+            created_at: createdAt,
+          });
+        } catch (sbErr) {
+          console.warn("Supabase profile sync notice:", sbErr.message);
+        }
+      }
 
       const userResponse = {
         id: userId,
@@ -270,27 +354,13 @@ export const authController = {
         });
       }
 
-      let user = null;
-      let cleanMobile = "";
+      const cleanMobile = mobile ? normalizeMobile(mobile) : "";
+      const cleanEmail = email ? email.trim().toLowerCase() : "";
 
-      // 1. Search database by mobile
-      if (mobile) {
-        cleanMobile = normalizeMobile(mobile);
-        user = db.prepare("SELECT * FROM users WHERE mobile = ?").get(cleanMobile);
+      // 1. Search database (Supabase Cloud + SQLite)
+      const user = await findUser(cleanMobile, cleanEmail);
 
-        if (!user) {
-          const last10 = String(mobile).replace(/\D/g, "").slice(-10);
-          user = db.prepare("SELECT * FROM users WHERE mobile = ?").get(last10);
-        }
-      }
-
-      // 2. Or search database by email
-      if (!user && email) {
-        const cleanEmail = email.trim().toLowerCase();
-        user = db.prepare("SELECT * FROM users WHERE email = ?").get(cleanEmail);
-      }
-
-      // 3. ONLY REGISTERED USERS CAN LOG IN
+      // 2. ONLY REGISTERED USERS CAN LOG IN
       if (!user) {
         return res.status(404).json({
           success: false,

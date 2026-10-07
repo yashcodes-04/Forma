@@ -8,6 +8,7 @@ import categoryRoutes from "./routes/categoryRoutes.js";
 import orderRoutes from "./routes/orderRoutes.js";
 import authRoutes from "./routes/authRoutes.js";
 import paymentRoutes from "./routes/paymentRoutes.js";
+import { supabase, isSupabaseConfigured } from "./database/supabaseClient.js";
 
 dotenv.config({ override: true });
 
@@ -30,6 +31,34 @@ try {
 } catch (err) {
   console.log("Seeding on startup...", err.message);
   seed();
+}
+
+// Sync permanent customer profiles from Supabase Cloud into local cache
+if (isSupabaseConfigured && supabase) {
+  supabase
+    .from("profiles")
+    .select("*")
+    .then(({ data, error }) => {
+      if (!error && data && data.length > 0) {
+        const insertUser = db.prepare(`
+          INSERT OR REPLACE INTO users (id, name, email, mobile, role, avatar, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `);
+        for (const u of data) {
+          insertUser.run(
+            u.id,
+            u.name || `${u.first_name || ""} ${u.last_name || ""}`.trim() || "Forma Member",
+            u.email || null,
+            u.mobile,
+            u.role || "customer",
+            u.avatar || null,
+            u.created_at || new Date().toISOString()
+          );
+        }
+        console.log(`☁️ Synced ${data.length} profiles from Supabase Cloud.`);
+      }
+    })
+    .catch((syncErr) => console.warn("Supabase startup sync notice:", syncErr.message));
 }
 
 // Root Route & Health Check

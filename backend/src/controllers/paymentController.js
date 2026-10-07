@@ -1,5 +1,6 @@
 import { db } from "../database/db.js";
 import { getRazorpayInstance, verifyRazorpaySignature } from "../services/razorpayService.js";
+import { supabase, isSupabaseConfigured } from "../database/supabaseClient.js";
 
 /**
  * Create a Razorpay Test Mode Order
@@ -186,6 +187,27 @@ export async function createPaymentOrder(req, res) {
           );
         }
       }
+
+      // Sync to Supabase Cloud
+      if (isSupabaseConfigured && supabase) {
+        try {
+          await supabase.from("orders").upsert({
+            id: orderId,
+            user_id: userId || null,
+            customer_name: name,
+            customer_mobile: mobile,
+            shipping_address: address,
+            city,
+            pincode: pin,
+            subtotal: finalAmount,
+            total: finalAmount,
+            status: "Pending Payment",
+            payment_method: "Razorpay",
+            payment_status: "pending",
+            created_at: new Date().toISOString(),
+          });
+        } catch {}
+      }
     } catch (dbErr) {
       console.warn("⚠️ Non-fatal DB record warning in createPaymentOrder:", dbErr.message);
     }
@@ -290,6 +312,18 @@ export async function verifyPayment(req, res) {
           }
         } catch (stockErr) {
           console.warn("Stock update notice:", stockErr.message);
+        }
+
+        // Sync to Supabase Cloud
+        if (isSupabaseConfigured && supabase) {
+          try {
+            await supabase.from("orders").update({
+              payment_status: "paid",
+              status: "Confirmed",
+            }).or(`id.eq.${resolvedOrderId},id.eq.${orderId}`);
+          } catch (sbErr) {
+            console.warn("Supabase verified order update notice:", sbErr.message);
+          }
         }
       }
     } catch (dbErr) {

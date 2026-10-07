@@ -1,4 +1,5 @@
 import { db } from "../database/db.js";
+import { supabase, isSupabaseConfigured } from "../database/supabaseClient.js";
 
 /**
  * Get orders with role and user-based isolation
@@ -10,15 +11,49 @@ export async function getOrders(req, res) {
     const adminHeader = req.headers["x-admin-role"] || req.headers["x-role"];
     const { userId, mobile } = req.query;
 
+    let cleanMobile = (mobile || "").replace(/\D/g, "");
+    if (cleanMobile.length > 10) cleanMobile = cleanMobile.slice(-10);
+
+    // 1. Try Supabase Cloud first
+    if (isSupabaseConfigured && supabase) {
+      try {
+        let query = supabase
+          .from("orders")
+          .select("*, order_items(*)")
+          .order("created_at", { ascending: false });
+
+        if (adminHeader === "admin") {
+          // Admin gets all orders
+        } else if (userId) {
+          query = query.eq("user_id", userId);
+        } else if (cleanMobile) {
+          query = query.ilike("customer_mobile", `%${cleanMobile}%`);
+        } else {
+          return res.json({ success: true, data: [] });
+        }
+
+        const { data, error } = await query;
+        if (!error && Array.isArray(data)) {
+          const formatted = data.map((order) => ({
+            ...order,
+            items: order.order_items || [],
+          }));
+          return res.json({
+            success: true,
+            source: "supabase-cloud",
+            data: formatted,
+          });
+        }
+      } catch (sbErr) {
+        console.warn("Supabase orders query notice:", sbErr.message);
+      }
+    }
+
+    // 2. Fallback to local SQLite database
     let rows;
     if (adminHeader === "admin") {
-      // Admin sees all orders
       rows = db.prepare("SELECT * FROM orders ORDER BY created_at DESC").all();
-    } else if (userId || mobile) {
-      // Filter strictly by user ID or mobile number
-      let cleanMobile = (mobile || "").replace(/\D/g, "");
-      if (cleanMobile.length > 10) cleanMobile = cleanMobile.slice(-10);
-
+    } else if (userId || cleanMobile) {
       rows = db
         .prepare(
           `SELECT * FROM orders 
@@ -28,11 +63,9 @@ export async function getOrders(req, res) {
         )
         .all(userId || "", `%${cleanMobile}%`);
     } else {
-      // Unauthenticated non-admin gets empty list
       return res.json({ success: true, data: [] });
     }
 
-    // Attach order items
     const ordersWithItems = rows.map((order) => {
       const items = db
         .prepare("SELECT * FROM order_items WHERE order_id = ?")
@@ -45,6 +78,7 @@ export async function getOrders(req, res) {
 
     res.json({
       success: true,
+      source: "sqlite-local",
       data: ordersWithItems,
     });
   } catch (err) {
@@ -162,6 +196,42 @@ export async function createOrder(req, res) {
 
       if (resolvedProductId) {
         updateStock.run(qty, resolvedProductId);
+      }
+    }
+
+    // Sync to Supabase Cloud
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase.from("orders").upsert({
+          id: orderId,
+          user_id: userId || null,
+          customer_name: name,
+          customer_mobile: mobile,
+          shipping_address: addressText,
+          city,
+          pincode,
+          subtotal: subtotal || total,
+          shipping_fee: shippingFee,
+          total,
+          status,
+          payment_method: paymentMethod,
+          payment_status: paymentStatus,
+          created_at: new Date().toISOString(),
+        });
+
+        if (Array.isArray(items) && items.length > 0) {
+          const supabaseItems = items.map((item) => ({
+            order_id: orderId,
+            product_name: item.name || "Item",
+            product_image: item.image || "",
+            price: Number(item.price) || 0,
+            quantity: Number(item.quantity) || 1,
+            total_price: (Number(item.price) || 0) * (Number(item.quantity) || 1),
+          }));
+          await supabase.from("order_items").insert(supabaseItems);
+        }
+      } catch (sbErr) {
+        console.warn("Supabase order sync notice:", sbErr.message);
       }
     }
 
