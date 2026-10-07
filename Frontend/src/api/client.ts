@@ -189,22 +189,46 @@ export const orderApi = {
     }
   },
 
-  async getOrders(params?: { userId?: string; mobile?: string; role?: string }): Promise<any[]> {
+  async getAdminOrders(): Promise<any[]> {
+    try {
+      const res = await fetch(`${API_BASE_URL}/orders`, {
+        headers: {
+          "x-admin-role": "admin",
+          "x-role": "admin",
+          Accept: "application/json",
+        },
+      });
+      if (!res.ok) return [];
+      const json = await res.json();
+      return json.data || [];
+    } catch (err) {
+      console.warn("Failed to fetch admin orders from server:", err);
+      return [];
+    }
+  },
+
+  async getUserOrders(userId?: string, mobile?: string): Promise<any[]> {
     try {
       const url = new URL(`${API_BASE_URL}/orders`);
-      if (params?.userId) url.searchParams.append("userId", params.userId);
-      if (params?.mobile) url.searchParams.append("mobile", params.mobile);
+      if (userId) url.searchParams.append("userId", userId);
+      if (mobile) url.searchParams.append("mobile", mobile);
 
-      const headers: Record<string, string> = {};
-      if (params?.role === "admin") headers["x-role"] = "admin";
-
-      const res = await fetch(url.toString(), { headers });
+      const res = await fetch(url.toString(), {
+        headers: { Accept: "application/json" },
+      });
       if (!res.ok) return [];
       const json = await res.json();
       return json.data || [];
     } catch {
       return [];
     }
+  },
+
+  async getOrders(params?: { userId?: string; mobile?: string; role?: string }): Promise<any[]> {
+    if (params?.role === "admin") {
+      return this.getAdminOrders();
+    }
+    return this.getUserOrders(params?.userId, params?.mobile);
   },
 };
 

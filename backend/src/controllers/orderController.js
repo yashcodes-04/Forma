@@ -137,9 +137,19 @@ export async function createOrder(req, res) {
 
     for (const item of items) {
       const qty = item.quantity || 1;
+      let resolvedProductId = null;
+      if (item.id) {
+        const prod = db.prepare("SELECT id FROM products WHERE id = ?").get(item.id);
+        if (prod) resolvedProductId = prod.id;
+      }
+      if (!resolvedProductId && (item.name || item.slug)) {
+        const prod = db.prepare("SELECT id FROM products WHERE name = ? OR slug = ?").get(item.name || "", item.slug || "");
+        if (prod) resolvedProductId = prod.id;
+      }
+
       insertItem.run(
         orderId,
-        item.id || null,
+        resolvedProductId,
         item.name || "Item",
         item.image || "",
         item.category || "Apparel",
@@ -150,8 +160,8 @@ export async function createOrder(req, res) {
         (item.price || 0) * qty
       );
 
-      if (item.id) {
-        updateStock.run(qty, item.id);
+      if (resolvedProductId) {
+        updateStock.run(qty, resolvedProductId);
       }
     }
 

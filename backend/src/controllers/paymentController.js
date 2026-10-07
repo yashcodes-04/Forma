@@ -141,31 +141,49 @@ export async function createPaymentOrder(req, res) {
           razorpayOrder.id,
           currency
         );
+      }
 
-        // Insert order items if present
-        if (Array.isArray(items) && items.length > 0) {
-          const insertItem = db.prepare(`
-            INSERT INTO order_items (
-              order_id, product_id, product_name, product_image, category, size, tone, price, quantity, total_price
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `);
+      // ALWAYS insert or refresh order items (clearing any old draft items)
+      if (Array.isArray(items) && items.length > 0) {
+        try {
+          db.prepare("DELETE FROM order_items WHERE order_id = ?").run(orderId);
+        } catch {
+          // ignore
+        }
 
-          for (const item of items) {
-            const qty = Math.max(1, Number(item.quantity) || 1);
-            const price = Number(item.price) || 0;
-            insertItem.run(
-              orderId,
-              item.id || null,
-              item.name || "Item",
-              item.image || "",
-              item.category || "Apparel",
-              item.size || "Standard",
-              item.tone || "",
-              price,
-              qty,
-              price * qty
-            );
+        const insertItem = db.prepare(`
+          INSERT INTO order_items (
+            order_id, product_id, product_name, product_image, category, size, tone, price, quantity, total_price
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+
+        for (const item of items) {
+          const qty = Math.max(1, Number(item.quantity) || 1);
+          const price = Number(item.price) || 0;
+
+          // Resolve valid product_id in database to respect foreign key constraint
+          let resolvedProductId = null;
+          if (item.id) {
+            const prod = db.prepare("SELECT id FROM products WHERE id = ?").get(item.id);
+            if (prod) resolvedProductId = prod.id;
           }
+          if (!resolvedProductId && (item.name || item.slug)) {
+            const prod = db.prepare("SELECT id FROM products WHERE name = ? OR slug = ?").get(item.name || "", item.slug || "");
+            if (prod) resolvedProductId = prod.id;
+          }
+
+          insertItem.run(
+            orderId,
+            resolvedProductId,
+            item.name || "Item",
+            item.image || "",
+            item.category || "Apparel",
+            item.size || "Standard",
+            item.tone || "",
+            price,
+            qty,
+            price * qty
+          );
         }
       }
     } catch (dbErr) {
@@ -260,11 +278,14 @@ export async function verifyPayment(req, res) {
 
         // Deduct stock for order items
         try {
-          const items = db.prepare("SELECT product_id, quantity FROM order_items WHERE order_id = ?").all(existing.id);
-          const updateStock = db.prepare("UPDATE products SET stock = MAX(0, stock - ?) WHERE id = ?");
+          const items = db.prepare("SELECT product_id, product_name, quantity FROM order_items WHERE order_id = ?").all(existing.id);
+          const updateStockById = db.prepare("UPDATE products SET stock = MAX(0, stock - ?) WHERE id = ?");
+          const updateStockByName = db.prepare("UPDATE products SET stock = MAX(0, stock - ?) WHERE name = ?");
           for (const item of items) {
             if (item.product_id) {
-              updateStock.run(item.quantity, item.product_id);
+              updateStockById.run(item.quantity, item.product_id);
+            } else if (item.product_name) {
+              updateStockByName.run(item.quantity, item.product_name);
             }
           }
         } catch (stockErr) {

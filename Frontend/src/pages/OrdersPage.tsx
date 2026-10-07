@@ -1,9 +1,11 @@
+import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router";
 import { useAuth } from "../auth/AuthContext";
 import EmptyState from "../components/EmptyState";
 import StorePageHeader from "../components/StorePageHeader";
 import { formatINR } from "../data/catalog";
 import { loadUserOrders } from "../data/orders";
+import { orderApi } from "../api/client";
 import "../store-pages.css";
 
 export default function OrdersPage() {
@@ -12,7 +14,47 @@ export default function OrdersPage() {
   const orderId = searchParams.get("orderId");
 
   const { user } = useAuth();
-  const orders = loadUserOrders(user);
+  const [orders, setOrders] = useState<any[]>(() => loadUserOrders(user));
+
+  useEffect(() => {
+    let mounted = true;
+    const fetchUserOrders = async () => {
+      try {
+        const serverOrders = await orderApi.getUserOrders(user?.id, user?.mobile);
+        if (mounted && serverOrders && serverOrders.length > 0) {
+          const formatted = serverOrders.map((o: any) => ({
+            id: o.id,
+            status: o.status || "Confirmed",
+            date: o.created_at
+              ? new Date(o.created_at).toLocaleDateString("en-IN", {
+                  day: "numeric",
+                  month: "short",
+                  year: "numeric",
+                })
+              : o.date || "Recent",
+            total: Number(o.total) || 0,
+            items: (o.items || []).map((i: any) => ({
+              id: i.product_id || i.id,
+              name: i.product_name || i.name,
+              image: i.product_image || i.image,
+              price: i.price,
+              quantity: i.quantity,
+            })),
+          }));
+          setOrders(formatted);
+        } else {
+          setOrders(loadUserOrders(user));
+        }
+      } catch {
+        setOrders(loadUserOrders(user));
+      }
+    };
+
+    fetchUserOrders();
+    return () => {
+      mounted = false;
+    };
+  }, [user]);
 
   return (
     <main className="store-page">
@@ -68,7 +110,7 @@ export default function OrdersPage() {
                 <p>Placed {order.date}</p>
               </div>
               <div className="order-images">
-                {order.items.slice(0, 3).map((item) => (
+                {order.items.slice(0, 3).map((item: any) => (
                   <img src={item.image} alt="" key={item.id} />
                 ))}
               </div>
@@ -83,4 +125,3 @@ export default function OrdersPage() {
     </main>
   );
 }
-
